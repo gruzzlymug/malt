@@ -123,7 +123,9 @@ formats = {
     ('price_8', 8): 'Q',
 }
 
-message_data = (pd.read_excel('message_types.xlsx', sheet_name='messages', encoding='latin1')
+message_data = (pd.read_excel('message_types.xlsx',
+                              sheet_name='messages',
+                              encoding='latin1')
                 .sort_values('id')
                 .drop('id', axis=1))
 message_types = clean_message_types(message_data)
@@ -135,6 +137,16 @@ message_labels.name = (message_labels.name
                        .str.replace('message', '')
                        .str.replace('.', '')
                        .str.strip().str.replace(' ', '_'))
+
+message_types.message_type = message_types.message_type.ffill()
+message_types = message_types[message_types.name != 'message_type']
+message_types.value = (message_types.value
+                       .str.lower()
+                       .str.replace(' ', '_')
+                       .str.replace('(', '')
+                       .str.replace(')', ''))
+message_types.info()
+
 # message_labels.to_csv('message_labels.csv', index=False)
 # message_types = pd.read_csv('message_types.csv')
 print(message_labels.head())
