@@ -209,5 +209,18 @@ with filename.open('rb') as data:
 
 print(timedelta(seconds=time() - start))
 
+# Summarize Trading Day
+
+# Trading Message Frequency
+counter = pd.Series(message_type_counter).to_frame('# Trades')
+counter['Message Type'] = counter.index.map(message_labels.set_index('message_type').name.to_dict())
+counter = counter[['Message Type', '# Trades']].sort_values('# Trades', ascending=False)
+print(counter)
+
+with pd.HDFStore(itch_store) as store:
+    store.put('summary', counter)
+
+# Top Equities by Traded Value
+
 
 print("yuck")
