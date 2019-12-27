@@ -132,9 +132,83 @@ def store_messages(m):
                          data_columns=dc)
 
 
+def dump_trading_messages_by_frequency():
+    """Trading Message Frequency"""
+    message_type_counter = Counter()
+
+    with pd.HDFStore(itch_store) as store:
+        keys = store.keys()
+        keys.remove("/summary")
+        for k in keys:
+            print(f"Reading {k}")
+            df = store[k]
+            message_type_counter[k[1:]] = len(df.index)
+
+    counter = pd.Series(message_type_counter).to_frame('# Trades')
+    counter['Message Type'] = counter.index.map(message_labels.set_index('message_type').name.to_dict())
+    counter = counter[['Message Type', '# Trades']].sort_values('# Trades', ascending=False)
+    print(counter)
+
+    with pd.HDFStore(itch_store) as store:
+        store.put('summary', counter)
+
+
+def plot_top_equities_by_value():
+    # Top Equities by Traded Value
+    with pd.HDFStore(itch_store) as store:
+        stocks = store['R'].loc[:, ['stock_locate', 'stock']]
+        trades = store['P'].append(store['Q'].rename(columns={'cross_price': 'price'}), sort=False).merge(stocks)
+    trades['value'] = trades.shares.mul(trades.price)
+    trades['value_share'] = trades.value.div(trades.value.sum())
+    trade_summary = trades.groupby('stock').value_share.sum().sort_values(ascending=False)
+    trade_summary.iloc[:50].plot.bar(figsize=(14, 6), color='darkblue', title='Share of Traded Value')
+    plt.gca().yaxis.set_major_formatter(FuncFormatter(lambda y, _: '{:.0%}'.format(y)))
+    plt.savefig(plots_path / "equities_by_value.png")
+
+
+def get_stock_messages(date, stock):
+    """Collect trading messages for given stock"""
+    with pd.HDFStore(itch_store) as store:
+        stock_locate = store.select('R', where='stock = stock').stock_locate.iloc[0]
+        target = 'stock_locate = stock_locate'
+
+        data = {}
+        # trading messsage types
+        messages = ['A', 'F', 'E', 'C', 'X', 'D', 'U', 'P', 'Q']
+        for m in messages:
+            data[m] = store.select(m, where=target).drop('stock_locate', axis=1).assign(type=m)
+
+    order_cols = ['order_reference_number', 'buy_sell_indicator', 'shares', 'price']
+    orders = pd.concat([data['A'], data['F']], sort=False, ignore_index=True).loc[:, order_cols]
+
+    for m in messages[2: -3]:
+        data[m] = data[m].merge(orders, how='left')
+
+    data['U'] = data['U'].merge(orders, how='left',
+                                right_on='order_reference_number',
+                                left_on='original_order_reference_number',
+                                suffixes=['', '_replaced'])
+
+    data['Q'].rename(columns={'cross_price': 'price'}, inplace=True)
+    data['X']['shares'] = data['X']['cancelled_shares']
+    data['X'] = data['X'].dropna(subset=['price'])
+
+    data = pd.concat([data[m] for m in messages], ignore_index=True, sort=False)
+    data['date'] = pd.to_datetime(date, format='%m%d%Y')
+    data.timestamp = data['date'].add(data.timestamp)
+    data = data[data.printable != 0]
+
+    drop_cols = ['tracking_number', 'order_reference_number', 'original_order_reference_number',
+                 'cross_type', 'new_order_reference_number', 'attribution', 'match_number',
+                 'printable', 'date', 'cancelled_shares']
+    return data.drop(drop_cols, axis=1).sort_values('timestamp').reset_index(drop=True)
+
+
 data_path = Path('data')
 itch_store = str(data_path / "itch.h5")
 order_book_store = data_path / "order_book.h5"
+
+plots_path = Path('plots')
 
 FTP_URL = "ftp://emi.nasdaq.com/ITCH/Nasdaq_ITCH/"
 SOURCE_FILE = "03272019.NASDAQ_ITCH50.gz"
@@ -209,41 +283,19 @@ for t, message in message_types.groupby('message_type'):
     message_fields[t] = namedtuple(typename=t, field_names=message.name.tolist())
     fstring[t] = '>' + ''.join(message.formats.tolist())
 
-message_type_counter = Counter()
-
 print(f"Looking for {itch_store}")
 if not Path(itch_store).exists():
     print("No ITCH Store")
     process_itch_file(filename)
 else:
     print("Found ITCH Store")
-    with pd.HDFStore(itch_store) as store:
-        keys = store.keys()
-        keys.remove("/summary")
-        for k in keys:
-            print(f"Reading {k}")
-            df = store[k]
-            message_type_counter[k[1:]] = len(df.index)
 
 # Summarize Trading Day
+dump_trading_messages_by_frequency()
+plot_top_equities_by_value()
 
-# Trading Message Frequency
-counter = pd.Series(message_type_counter).to_frame('# Trades')
-counter['Message Type'] = counter.index.map(message_labels.set_index('message_type').name.to_dict())
-counter = counter[['Message Type', '# Trades']].sort_values('# Trades', ascending=False)
-print(counter)
-
-with pd.HDFStore(itch_store) as store:
-    store.put('summary', counter)
-
-# Top Equities by Traded Value
-with pd.HDFStore(itch_store) as store:
-    stocks = store['R'].loc[:, ['stock_locate', 'stock']]
-    trades = store['P'].append(store['Q'].rename(columns={'cross_price': 'price'}), sort=False).merge(stocks)
-trades['value'] = trades.shares.mul(trades.price)
-trades['value_share'] = trades.value.div(trades.value.sum())
-trade_summary = trades.groupby('stock').value_share.sum().sort_values(ascending=False)
-trade_summary.iloc[:50].plot.bar(figsize=(14, 6), color='darkblue', title='Share of Traded Value')
-plt.gca().yaxis.set_major_formatter(FuncFormatter(lambda y, _: '{:.0%}'.format(y)))
+# Build Order Book
+stock = 'AAPL'
+order_dict = {-1: 'sell', 1: 'buy'}
 
 print("Done")
