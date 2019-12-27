@@ -59,6 +59,51 @@ def format_alpha(mtype, data):
     return data
 
 
+def process_itch_file(filename):
+    messages = {}
+    message_count = 0
+    start = time()
+    with filename.open('rb') as data:
+        while True:
+            # determine message size in bytes
+            message_size = int.from_bytes(data.read(2), byteorder='big', signed=False)
+
+            # get message type by reading first byte
+            message_type = data.read(1).decode('ascii')
+
+            # create data structure to capture result
+            if not messages.get(message_type):
+                messages[message_type] = []
+
+            message_type_counter.update([message_type])
+
+            # read and store message
+            record = data.read(message_size - 1)
+            message = message_fields[message_type]._make(unpack(fstring[message_type], record))
+            messages[message_type].append(message)
+
+            # deal with system events
+            if message_type == 'S':
+                timestamp = int.from_bytes(message.timestamp, byteorder='big')
+                print('\n', event_codes.get(message.event_code.decode('ascii'), 'Error'))
+                print('\t{0}\t{1:,.0f}'.format(timedelta(seconds=timestamp * 1e-9),
+                                                         message_count))
+                if message.event_code.decode('ascii') == 'C':
+                    store_messages(messages)
+                    break
+
+            message_count += 1
+            if message_count % 2.5e7 == 0:
+                timestamp = int.from_bytes(message.timestamp, byteorder='big')
+                print('\t{0}\t{1:,.0f}\t{2}'.format(timedelta(seconds=timestamp * 1e-9),
+                                                    message_count,
+                                                    timedelta(seconds=time() - start)))
+                store_messages(messages)
+                messages = {}
+
+    print(timedelta(seconds=time() - start))
+
+
 def store_messages(m):
     """Handle occasional storing of all messages"""
     with pd.HDFStore(itch_store) as store:
@@ -164,50 +209,21 @@ for t, message in message_types.groupby('message_type'):
     message_fields[t] = namedtuple(typename=t, field_names=message.name.tolist())
     fstring[t] = '>' + ''.join(message.formats.tolist())
 
-messages = {}
-message_count = 0
 message_type_counter = Counter()
 
-start = time()
-with filename.open('rb') as data:
-    while True:
-        # determine message size in bytes
-        message_size = int.from_bytes(data.read(2), byteorder='big', signed=False)
-
-        # get message type by reading first byte
-        message_type = data.read(1).decode('ascii')
-
-        # create data structure to capture result
-        if not messages.get(message_type):
-            messages[message_type] = []
-
-        message_type_counter.update([message_type])
-
-        # read and store message
-        record = data.read(message_size - 1)
-        message = message_fields[message_type]._make(unpack(fstring[message_type], record))
-        messages[message_type].append(message)
-
-        # deal with system events
-        if message_type == 'S':
-            timestamp = int.from_bytes(message.timestamp, byteorder='big')
-            print('\n', event_codes.get(message.event_code.decode('ascii'), 'Error'))
-            print('\t{0}\t{1:,.0f}'.format(timedelta(seconds=timestamp * 1e-9),
-                                                     message_count))
-            if message.event_code.decode('ascii') == 'C':
-                store_messages(messages)
-                break
-
-        message_count += 1
-        if message_count % 2.5e7 == 0:
-            timestamp = int.from_bytes(message.timestamp, byteorder='big')
-            print('\t{0}\t{1:,.0f}\t{2}'.format(timedelta(seconds=timestamp * 1e-9),
-                                                message_count,
-                                                timedelta(seconds=time() - start)))
-            store_messages(messages)
-            messages = {}
-
-print(timedelta(seconds=time() - start))
+print(f"Looking for {itch_store}")
+if not Path(itch_store).exists():
+    print("No ITCH Store")
+    process_itch_file(filename)
+else:
+    print("Found ITCH Store")
+    with pd.HDFStore(itch_store) as store:
+        keys = store.keys()
+        keys.remove("/summary")
+        for k in keys:
+            print(f"Reading {k}")
+            df = store[k]
+            message_type_counter[k[1:]] = len(df.index)
 
 # Summarize Trading Day
 
@@ -215,6 +231,7 @@ print(timedelta(seconds=time() - start))
 counter = pd.Series(message_type_counter).to_frame('# Trades')
 counter['Message Type'] = counter.index.map(message_labels.set_index('message_type').name.to_dict())
 counter = counter[['Message Type', '# Trades']].sort_values('# Trades', ascending=False)
+print(counter)
 
 with pd.HDFStore(itch_store) as store:
     store.put('summary', counter)
