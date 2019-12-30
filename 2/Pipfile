@@ -12,6 +12,7 @@ numpy = "*"
 matplotlib = "*"
 xlrd = "*"
 tables = "*"
+seaborn = "*"
 
 [requires]
 python_version = "3.7"
