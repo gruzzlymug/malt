@@ -513,4 +513,62 @@ plt.ylabel('Shares (\'000)', fontsize=12)
 plt.tight_layout()
 plt.savefig('plots/price_distribution', dpi=600)
 
+# Order Book Depth
+utc_offset = timedelta(hours=4)
+depth = 100
+
+buy_per_min = (buy
+               .groupby([pd.Grouper(key='timestamp', freq='Min'), 'price'])
+               .shares
+               .sum()
+               .apply(np.log)
+               .to_frame('shares')
+               .reset_index("price")
+               .between_time(market_open, market_close)
+               .groupby(level='timestamp', as_index=False, group_keys=False)
+               .apply(lambda x: x.nlargest(columns='price', n=depth))
+               .reset_index())
+buy_per_min.timestamp = buy_per_min.timestamp.add(utc_offset).astype(int)
+buy_per_min.info()
+
+sell_per_min = (sell
+                .groupby([pd.Grouper(key='timestamp', freq='Min'), 'price'])
+                .shares
+                .sum()
+                .apply(np.log)
+                .to_frame('shares')
+                .reset_index('price')
+                .between_time(market_open, market_close)
+                .groupby(level='timestamp', as_index=False, group_keys=False)
+                .apply(lambda x: x.nsmallest(columns='price', n=depth))
+                .reset_index())
+sell_per_min.timestamp = sell_per_min.timestamp.add(utc_offset).astype(int)
+sell_per_min.info()
+
+with pd.HDFStore(order_book_store) as store:
+    trades = store[f"{stock}/trades"]
+trades.price = trades.price.mul(1e-4)
+trades = trades[trades.cross == 0].between_time(market_open, market_close)
+
+trades_per_min = (trades
+                  .resample('Min')
+                  .agg({'price': 'mean', 'shares': 'sum'}))
+trades_per_min.index = trades_per_min.index.to_series().add(utc_offset).astype(int)
+trades_per_min.info()
+
+fig, ax = plt.subplots(figsize=(7, 5))
+
+buy_per_min.plot.scatter(x='timestamp', y='price', c='shares', ax=ax, colormap='Blues', colorbar=False, alpha=.25)
+sell_per_min.plot.scatter(x='timestamp', y='price', c='shares', ax=ax, colormap='Reds', colorbar=False, alpha=.25)
+trades_per_min.price.plot(figsize=(14, 8), c='k', ax=ax, lw=2,
+                          title=f'{stock} | {date} | Buy and Sell Limit Order Book | Depth = {depth}')
+
+xticks = [datetime.fromtimestamp(ts / 1e9).strftime('%H:%M') for ts in ax.get_xticks()]
+ax.set_xticklabels(xticks)
+ax.set_xlabel('')
+ax.set_ylabel('Price')
+
+fig.tight_layout()
+fig.savefig('plots/order_book2', dpi=600)
+
 print("\nDone")
